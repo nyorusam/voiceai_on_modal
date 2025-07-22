@@ -4,4 +4,6 @@
 
 Installation
 
-* create [Modal](modal.com) account and run `modal setup` in your terminal
+* create a new python environment: `python3.12 -m venv venv`
+* `pip install -r requirements.txt`
+* create [Modal](http://modal.com) account and run `modal setup` in your terminal

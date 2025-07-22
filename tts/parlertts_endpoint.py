@@ -1,21 +1,20 @@
-# modal deploy parlertts_on_modal.py
+# modal deploy parlertts_endpoint.py
 
-# curl -X POST --get "https://personalizedmodels--parlertts-api-example-parlertts-generate.modal.run" \
+# curl -X POST --get "https://xxxxxxxxxx--parler-tts-parlertts-generate.modal.run" \
 #   --data-urlencode "prompt=Which Workers Will AI Hurt Most: The Young or the Experienced?" \
-#   --data-urlencode "description=friendly old woman with a deep voice" \
-#   --output /tmp/n1.wav
+#   --data-urlencode "description=friendly old man with a deep voice" \
+#   --output sample_parlertts.wav
 
 import io
 import modal
 
-#     #"flash-attn --no-build-isolation",
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "torch","torchaudio","transformers", "soundfile", "parler_tts", "fastapi[standard]")
 
 model_volume = modal.Volume.from_name("tts-model-cache", create_if_missing=True)
 
 
-app = modal.App("parlertts-api-example", 
+app = modal.App("parler-tts", 
                 image=image,
                 volumes={"/cache": model_volume},)
 
@@ -31,13 +30,11 @@ with image.imports():
     from fastapi.responses import StreamingResponse
 
 
-
 # works well
 MODEL_NAME = "parler-tts/parler-tts-mini-v1.1"
 
 # # created weird sounds, no voice
 # MODEL_NAME = "parler-tts/parler-tts-large-v1"
-
 
 @app.cls(gpu="L4", scaledown_window=60 * 5, enable_memory_snapshot=True)
 @modal.concurrent(max_inputs=2)

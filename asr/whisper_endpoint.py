@@ -1,10 +1,11 @@
 # Deploys a FASTAPI endpoint for Whisper models (via FasterWhisper) on Modal GPUs.
 
 # To deploy run: 
-#  modal deploy whisper_transcription_endpoint.py
+#  modal deploy whisper_endpoint.py
 # To test:
-#  curl -X POST "<API_URL>" -F "wav=@/path/to/example.wav" -F "language=en"
-
+#  curl -X POST "https://xxxxxx--whisper-asr-whispertranscriber-transcribe.modal.run" \
+#    -F "wav=@/path/to/example.wav" \
+#    -F "language=en"
 
 import modal
 from pathlib import Path
@@ -12,7 +13,7 @@ import numpy as np
 from fastapi import File, Form
 import os
 
-MODAL_APP_NAME = "whisper-transcriber"
+MODAL_APP_NAME = "whisper-asr"
 
 SAMPLE_RATE = 16000
 BEAM_SIZE = 5
@@ -21,10 +22,8 @@ MODEL_DOWNLOAD_DIR = Path("downloads")
 TMP_DOWNLOAD_DIR = Path("/tmp")
 
 
-GPU = 'a100'
+GPU = 'L4'
 SCALEDOWN = 60 * 2 # seconds
-
-
 
 def maybe_download_model(model_storage_dir, model_id):
     """Download fasterwhisper model if not available locally.
@@ -151,7 +150,7 @@ with cuda_image.imports():
     enable_memory_snapshot=True,
     volumes={MODEL_MOUNT_DIR: volume})
 @modal.concurrent(max_inputs=10)
-class StandardSpeechTranscriber:
+class WhisperTranscriber:
     """Default Whisper model, can specify language or let model detect."""
 
     model_id = 'large-v3-turbo'

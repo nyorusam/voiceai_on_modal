@@ -2,14 +2,11 @@
 # example from: https://modal.com/docs/examples/chatterbox_tts
 #
 # deploy with
-# modal deploy chatterbox_tts.py
+# modal deploy chatterbox_endpoint.py
 #
-# use endpoint
-# mkdir -p /tmp/chatterbox-tts  # create tmp directory
-
-# curl -X POST --get "https://xxx--chatterbox-api-example-chatterbox-generate.modal.run" \
+# curl -X POST --get "https://xxxxxxxx--chatterbox-tts-chatterbox-generate.modal.run" \
 #   --data-urlencode "prompt=Which Workers Will AI Hurt Most: The Young or the Experienced?" \
-#   --output /Users/katrintomanek/Downloads/sample_chatterbox.wav
+#   --output sample_chatterbox.wav
 
 
 import io
@@ -19,7 +16,7 @@ import modal
 image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "chatterbox-tts", "fastapi[standard]", "peft"
 )
-app = modal.App("chatterbox-api-example", image=image)
+app = modal.App("chatterbox-tts", image=image)
 
 with image.imports():
     import torchaudio as ta
@@ -27,7 +24,7 @@ with image.imports():
     from fastapi.responses import StreamingResponse
 
 # gpus: a10g -- works
-@app.cls(gpu="a100", scaledown_window=60 * 5, enable_memory_snapshot=True)
+@app.cls(gpu="L4", scaledown_window=60 * 5, enable_memory_snapshot=True)
 @modal.concurrent(max_inputs=2)
 class Chatterbox:
     @modal.enter()

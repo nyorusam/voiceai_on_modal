@@ -1,11 +1,23 @@
+# Runs Mistral's AudioLLM 'Voxtral'
+# https://huggingface.co/mistralai/Voxtral-Mini-3B-2507
+#
 # Deploys a FASTAPI endpoint for Voxtral transcription on Modal GPUs.
 
 # To deploy run: 
 #  modal deploy voxtral_transcription_endpoint.py
 # To test:
+
+# Transcription
+
 #  curl -X POST "https://xxxx--voxtral-asr-voxtraltranscriber-transcribe.modal.run" \
 #    -F "wav=@/Users/katrintomanek/dev/audio_samples/jfk_asknot.wav" \
 #    -F "language=en"
+
+# Audio QA
+
+#   curl -X POST "https://xxxx--voxtral-asr-voxtraltranscriber-audio-qa.modal.run" \
+#     -F "wav=@/Users/katrintomanek/dev/audio_samples/jfk_asknot.wav" \
+#     -F "instruction=What is being said and who is speaking?"
 
 import modal
 from pathlib import Path
@@ -70,6 +82,47 @@ def transcribe_with_voxtral(processor, model, audio_file_path: str, language: st
     return {
         'result': "success",
         'transcription': transcription,
+        'processing_time': time.time() - t1
+    }
+
+def audio_qa_with_voxtral(processor, model, audio_file_path: str, instruction: str):
+    """Audio Q&A logic using Voxtral.
+    
+    Based on: https://huggingface.co/mistralai/Voxtral-Mini-3B-2507."""
+    import time
+    
+    t1 = time.time()
+    
+    print(f"Running Voxtral audio Q&A with instruction: {instruction}")
+    
+    conversation = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "audio",
+                    "path": audio_file_path,
+                },
+                {"type": "text", "text": instruction},
+            ],
+        }
+    ]
+    
+    inputs = processor.apply_chat_template(conversation)
+    inputs = inputs.to(model.device, dtype=model.dtype)
+    
+    outputs = model.generate(**inputs, max_new_tokens=500)
+    decoded_outputs = processor.batch_decode(outputs[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)
+    
+    answer = decoded_outputs[0] if decoded_outputs else ""
+    
+    print(f"Audio Q&A finished in {time.time() - t1} seconds")
+    print(f"Answer: {answer}")
+    
+    return {
+        'result': "success",
+        'instruction': instruction,
+        'answer': answer,
         'processing_time': time.time() - t1
     }
 
@@ -151,6 +204,18 @@ class VoxtralTranscriber:
         
         try:
             result = transcribe_with_voxtral(self.processor, self.model, tmp_file_path, language)
+            return result
+        finally:
+            os.unlink(tmp_file_path)
+
+    @modal.fastapi_endpoint(docs=True, method="POST")
+    def audio_qa(self, wav: bytes=File(), instruction: str=Form()):
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+            tmp_file.write(wav)
+            tmp_file_path = tmp_file.name
+        
+        try:
+            result = audio_qa_with_voxtral(self.processor, self.model, tmp_file_path, instruction)
             return result
         finally:
             os.unlink(tmp_file_path)

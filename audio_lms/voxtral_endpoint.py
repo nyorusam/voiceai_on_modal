@@ -202,11 +202,8 @@ class VoxtralTranscriber:
             tmp_file.write(wav)
             tmp_file_path = tmp_file.name
         
-        try:
-            result = transcribe_with_voxtral(self.processor, self.model, tmp_file_path, language)
-            return result
-        finally:
-            os.unlink(tmp_file_path)
+        result = transcribe_with_voxtral(self.processor, self.model, tmp_file_path, language)
+        return result
 
     @modal.fastapi_endpoint(docs=True, method="POST")
     def audio_qa(self, wav: bytes=File(), instruction: str=Form()):
@@ -214,8 +211,5 @@ class VoxtralTranscriber:
             tmp_file.write(wav)
             tmp_file_path = tmp_file.name
         
-        try:
-            result = audio_qa_with_voxtral(self.processor, self.model, tmp_file_path, instruction)
-            return result
-        finally:
-            os.unlink(tmp_file_path)
+        result = audio_qa_with_voxtral(self.processor, self.model, tmp_file_path, instruction)
+        return result

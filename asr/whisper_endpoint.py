@@ -29,9 +29,12 @@ def maybe_download_model(model_storage_dir, model_id):
     """Download fasterwhisper model if not available locally.
     (We want to avoid downloading the same model every time we start the endpoint).
     """
+    from huggingface_hub import snapshot_download, login
     from faster_whisper.utils import download_model
     from pathlib import Path
 
+    print("logging into HF with auth token: xxxx")
+    login(token=hf_auth_token)
     model_path = model_storage_dir / model_id
 
     if not model_path.exists():
@@ -145,6 +148,7 @@ with cuda_image.imports():
 
 @app.cls(
     image=cuda_image, 
+    secrets=[modal.Secret.from_name("huggingface-secret")],
     gpu=GPU, 
     scaledown_window=SCALEDOWN, 
     enable_memory_snapshot=True,

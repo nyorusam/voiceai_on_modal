@@ -13,20 +13,22 @@
 #  curl -X POST "https://xxxx--gemma3n-asr-gemma3ntranscriber-transcribe.modal.run" \
 #    -F "wav=@/path/to/audio.wav"
 #
-#
 # (2) Audio QA
 # (QA is more likely to hallucinate, especially in low resource languages. Consider tweaking the prompt.)
 #   curl -X POST "https://xxxx--gemma3n-asr-gemma3ntranscriber-audio-qa.modal.run" \
 #     -F "wav=@/path/to/audio.wav"
 #     -F "instruction=What is being said and who is speaking?"
-
+#
+# Optional parameters
+# * length of generation: eg "max_generated_tokens=512" 
+# * language: eg "language=English"
 
 
 from fastapi import File, Form
 import modal
 from pathlib import Path
 import os
-import time
+
 
 MODAL_APP_NAME = "gemma3n-asr"
 
@@ -34,6 +36,8 @@ MODEL_MOUNT_DIR = Path("/models")
 MODEL_DOWNLOAD_DIR = Path("downloads")
 TMP_DOWNLOAD_DIR = Path("/tmp")
 
+
+WARMUP_SECONDS = 30
 
 # # E4B needs more memory, exceeds defaults of L4
 # REPO_ID = "google/gemma-3n-E4B-it"
@@ -73,7 +77,39 @@ def maybe_download_model(model_storage_dir, hf_auth_token, repo_id):
     
     return str(model_path)
 
-def transcribe_with_gemma(processor, model, audio_file_path: str, language: str = None):
+def warmup(processor, model, seconds=1, sampling_rate=16000):
+    import numpy as np
+    import time
+
+    warmup_audio = np.zeros((sampling_rate * seconds,), dtype=np.float32)  # N second of silence
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": warmup_audio},                
+                {"type": "text", "text": "Wake up!"},
+            ]
+        }
+    ]
+
+    t1 = time.time()
+    print(">> Triggered model warmup....")
+    input_ids = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True, 
+        return_dict=True,
+        return_tensors="pt",
+    )
+    input_ids = input_ids.to(model.device, dtype=model.dtype)
+
+    _ = model.generate(**input_ids, max_new_tokens=512)
+    print(f">> Warmup complete. Took {time.time()-t1} seconds.")
+
+
+
+def transcribe_with_gemma(processor, model, audio_file_path: str, language: str = None, max_generated_tokens: int = 512):
     """Actual transcription logic using Gemma3n.
     
     Based on: https://ai.google.dev/gemma/docs/capabilities/audio#stt"""
@@ -106,7 +142,7 @@ def transcribe_with_gemma(processor, model, audio_file_path: str, language: str 
     )
     input_ids = input_ids.to(model.device, dtype=model.dtype)
 
-    outputs = model.generate(**input_ids, max_new_tokens=500)
+    outputs = model.generate(**input_ids, max_new_tokens=max_generated_tokens)
 
     result = processor.batch_decode(
         outputs,
@@ -126,7 +162,7 @@ def transcribe_with_gemma(processor, model, audio_file_path: str, language: str 
         'processing_time': time.time() - t1
     }
 
-def audio_qa_with_gemma(processor, model, audio_file_path: str, instruction: str):
+def audio_qa_with_gemma(processor, model, audio_file_path: str, instruction: str, max_generated_tokens: int = 512):
     """Audio Q&A logic using Gemma3n.
     
     Based on: https://ai.google.dev/gemma/docs/capabilities/audio#stt"""
@@ -155,7 +191,7 @@ def audio_qa_with_gemma(processor, model, audio_file_path: str, instruction: str
     )
     input_ids = input_ids.to(model.device, dtype=model.dtype)
 
-    outputs = model.generate(**input_ids, max_new_tokens=500)
+    outputs = model.generate(**input_ids, max_new_tokens=max_generated_tokens)
 
     result = processor.batch_decode(
         outputs,
@@ -208,6 +244,7 @@ with cuda_image.imports():
     import tempfile
     import os
 
+
 @app.cls(
     image=cuda_image, 
     gpu=GPU, 
@@ -255,20 +292,23 @@ class Gemma3nTranscriber:
             # Save for next time
             self.model.save_pretrained(model_path)
 
+        # trigger warmup
+        warmup(self.processor, self.model, seconds=WARMUP_SECONDS)
+
     @modal.fastapi_endpoint(docs=True, method="POST")
-    def transcribe(self, wav: bytes=File(), language: str=Form(default=None)):
+    def transcribe(self, wav: bytes=File(), language: str=Form(default=None), max_generated_tokens: int=Form(default=None)):
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
             tmp_file.write(wav)
             tmp_file_path = tmp_file.name
         
-        result = transcribe_with_gemma(self.processor, self.model, tmp_file_path, language)
+        result = transcribe_with_gemma(self.processor, self.model, tmp_file_path, language, max_generated_tokens)
         return result
 
     @modal.fastapi_endpoint(docs=True, method="POST")
-    def audio_qa(self, wav: bytes=File(), instruction: str=Form()):
+    def audio_qa(self, wav: bytes=File(), instruction: str=Form(), max_generated_tokens: int=Form(default=None)):
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
             tmp_file.write(wav)
             tmp_file_path = tmp_file.name
         
-        result = audio_qa_with_gemma(self.processor, self.model, tmp_file_path, instruction)
+        result = audio_qa_with_gemma(self.processor, self.model, tmp_file_path, instruction, max_generated_tokens)
         return result

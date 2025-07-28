@@ -31,6 +31,8 @@ MODEL_MOUNT_DIR = Path("/models")
 MODEL_DOWNLOAD_DIR = Path("downloads")
 TMP_DOWNLOAD_DIR = Path("/tmp")
 
+WARMUP_SECONDS = 30
+
 GPU = 'L4'
 SCALEDOWN = 60 * 2 # seconds
 REPO_ID = "mistralai/Voxtral-Mini-3B-2507"
@@ -59,6 +61,32 @@ def maybe_download_model(model_storage_dir, repo_id):
     
     return str(model_path)
 
+def warmup(processor, model, seconds=1, sampling_rate=16000):
+    import numpy as np
+    import time
+    import tempfile
+
+    warmup_audio = np.zeros((sampling_rate * seconds,), dtype=np.float32)  # N second of silence
+    
+    # Create temporary file for warmup audio
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+        import soundfile as sf
+        sf.write(tmp_file.name, warmup_audio, sampling_rate)
+        tmp_file_path = tmp_file.name
+
+    t1 = time.time()
+    print(">> Triggered model warmup....")
+    
+    try:
+        inputs = processor.apply_transcription_request(language="en", audio=tmp_file_path, model_id=REPO_ID)
+        inputs = inputs.to(model.device, dtype=model.dtype)
+        _ = model.generate(**inputs, max_new_tokens=50, do_sample=False)
+        print(f">> Warmup complete. Took {time.time()-t1} seconds.")
+    finally:
+        # Clean up temporary file
+        import os
+        os.unlink(tmp_file_path)
+
 def transcribe_with_voxtral(processor, model, audio_file_path: str, language: str = "en"):
     """Actual transcription logic using Voxtral.
     
@@ -68,13 +96,13 @@ def transcribe_with_voxtral(processor, model, audio_file_path: str, language: st
     t1 = time.time()
     
     print(f"Running Voxtral transcription for language: {language}")
-    inputs = processor.apply_transcrition_request(language=language, audio=audio_file_path, model_id=REPO_ID)
+    inputs = processor.apply_transcription_request(language=language, audio=audio_file_path, model_id=REPO_ID)
     inputs = inputs.to(model.device, dtype=model.dtype)
     
-    outputs = model.generate(**inputs, max_new_tokens=500)
-    decoded_outputs = processor.batch_decode(outputs[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)
+    outputs = model.generate(**inputs, max_new_tokens=500, do_sample=False)
+    decoded_output = processor.decode(outputs[0, inputs.input_ids.shape[1]:], skip_special_tokens=True)
     
-    transcription = decoded_outputs[0] if decoded_outputs else ""
+    transcription = decoded_output if decoded_output else ""
     
     print(f"Transcription finished in {time.time() - t1} seconds")
     print(f"Transcription: {transcription}")
@@ -111,10 +139,10 @@ def audio_qa_with_voxtral(processor, model, audio_file_path: str, instruction: s
     inputs = processor.apply_chat_template(conversation)
     inputs = inputs.to(model.device, dtype=model.dtype)
     
-    outputs = model.generate(**inputs, max_new_tokens=500)
-    decoded_outputs = processor.batch_decode(outputs[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)
+    outputs = model.generate(**inputs, max_new_tokens=500, do_sample=False)
+    decoded_output = processor.decode(outputs[0, inputs.input_ids.shape[1]:], skip_special_tokens=True)
     
-    answer = decoded_outputs[0] if decoded_outputs else ""
+    answer = decoded_output if decoded_output else ""
     
     print(f"Audio Q&A finished in {time.time() - t1} seconds")
     print(f"Answer: {answer}")
@@ -140,7 +168,8 @@ cuda_image = (
         "mistral_common==1.8.1",
         "git+https://github.com/huggingface/transformers", # need the latest version according to: https://huggingface.co/mistralai/Voxtral-Mini-3B-2507
         "librosa",
-        "huggingface_hub[hf_transfer]==0.33.4",
+        "soundfile",
+        "huggingface_hub[hf_transfer]",
     )
 )
 
@@ -195,6 +224,9 @@ class VoxtralTranscriber:
             )
             # Save for next time
             self.model.save_pretrained(model_path)
+        
+        # trigger warmup
+        warmup(self.processor, self.model, seconds=WARMUP_SECONDS)
 
     @modal.fastapi_endpoint(docs=True, method="POST")
     def transcribe(self, wav: bytes=File(), language: str=Form(default="en")):

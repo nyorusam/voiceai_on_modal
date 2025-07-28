@@ -107,8 +107,6 @@ def warmup(processor, model, seconds=1, sampling_rate=16000):
     _ = model.generate(**input_ids, max_new_tokens=512)
     print(f">> Warmup complete. Took {time.time()-t1} seconds.")
 
-
-
 def transcribe_with_gemma(processor, model, audio_file_path: str, language: str = None, max_generated_tokens: int = 512):
     """Actual transcription logic using Gemma3n.
     
@@ -142,16 +140,12 @@ def transcribe_with_gemma(processor, model, audio_file_path: str, language: str 
     )
     input_ids = input_ids.to(model.device, dtype=model.dtype)
 
-    outputs = model.generate(**input_ids, max_new_tokens=max_generated_tokens)
+    outputs = model.generate(**input_ids, max_new_tokens=max_generated_tokens, do_sample=False)
 
-    result = processor.batch_decode(
-        outputs,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=True
-    )
+    result = processor.decode(outputs[0], skip_special_tokens=True, clean_up_tokenization_spaces=True)
     
     # Extract transcript from the model response
-    transcript = result[0].split('model', 1)[1].strip() if result and 'model' in result[0] else (result[0] if result else "")
+    transcript = result.split('model', 1)[1].strip() if result and 'model' in result else (result if result else "")
     
     print(f"Transcription finished in {time.time() - t1} seconds")
     print(f"Transcription: {transcript}")
@@ -191,16 +185,12 @@ def audio_qa_with_gemma(processor, model, audio_file_path: str, instruction: str
     )
     input_ids = input_ids.to(model.device, dtype=model.dtype)
 
-    outputs = model.generate(**input_ids, max_new_tokens=max_generated_tokens)
+    outputs = model.generate(**input_ids, max_new_tokens=max_generated_tokens, do_sample=False)
 
-    result = processor.batch_decode(
-        outputs,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=True
-    )
+    result = processor.decode(outputs[0], skip_special_tokens=True, clean_up_tokenization_spaces=True)
     
     # Extract answer from the model response
-    answer = result[0].split('model', 1)[1].strip() if result and 'model' in result[0] else (result[0] if result else "")
+    answer = result.split('model', 1)[1].strip() if result and 'model' in result else (result if result else "")
     
     print(f"Audio Q&A finished in {time.time() - t1} seconds")
     print(f"Answer: {answer}")

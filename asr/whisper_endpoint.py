@@ -33,8 +33,6 @@ def maybe_download_model(model_storage_dir, model_id):
     from faster_whisper.utils import download_model
     from pathlib import Path
 
-    print("logging into HF with auth token: xxxx")
-    login(token=hf_auth_token)
     model_path = model_storage_dir / model_id
 
     if not model_path.exists():

@@ -1,18 +1,26 @@
-# Streaming-based ASR based on websockets.
+# Streaming-based ASR based on websockets. Two ASR models (Whisper and Parakeet) are supported.
 #
 # Below code is based on this websocket and streaming example: 
 # https://modal.com/docs/examples/streaming_parakeet#
 #
+# Note:
 # Segmentation here is done using a silence detector -- only when a silence of a certain
 # minimum length is detected, transcription is started for the previous segment.
 # It is good for demonstration, but for practical streaming-based ASR one would rather do 
-# a combination of silence detection (or VAD) and maximum audio-buffer size. See for example
+# a combination of silence detection (or VAD) and maximum audio-buffer size. Common issues 
+# this current approach has are for example: momemts of silence may be transcribed (which will
+# often lead to "hello" or "yeah" or "hmm" depending on the model). Sometimes small pieces in the
+# audio are lost and hence untranscribed. Streaming does not feel real-time and adding pauses to trigger
+# transcription is certainly artificial.
+#
+# For a better way to handle real-time streaming see for example
 # here for a more responsive real-time streaming approach (on-device): https://github.com/ktomanek/captioning
 #
 # How to run:
 # * modal deploy streaming_endpoint.py
-# * Then open created endpoint to see web frontend: 
-#    https://xxxx--streaming-endpoint-asrmodel-web.modal.run
+# * Then open the created endpoint for either of the two models: 
+#    https://xxx--streaming-endpoint-whisper-web.modal.run
+#    https://xxx--streaming-endpoint-parakeet-web.modal.run
 
 import asyncio
 import os
@@ -71,6 +79,10 @@ image = (
         "fastapi==0.115.12",
         "numpy<2",
         "pydub==0.25.1",
+        "torch",
+        "ctranslate2",
+        "faster_whisper",
+        "librosa",
     )
     .entrypoint([])  # silence chatty logs by container on start
     .add_local_dir(  # changes fastest, so make this the last layer
@@ -79,7 +91,7 @@ image = (
     )
 )
 
-def maybe_download_model(model_storage_dir, model_name):
+def maybe_download_nemo_model(model_storage_dir, model_name):
     """Download NeMo Parakeet model if not available locally.
     (We want to avoid downloading the same model every time we start the endpoint).
     """
@@ -100,6 +112,69 @@ def maybe_download_model(model_storage_dir, model_name):
     return str(model_file)
 
 
+def maybe_download_whisper_model(model_storage_dir, model_id):
+    """Download fasterwhisper model if not available locally.
+    (We want to avoid downloading the same model every time we start the endpoint).
+    """
+    from faster_whisper.utils import download_model
+
+    model_path = model_storage_dir / model_id
+
+    if not model_path.exists():
+        print(f"Downloading model to {model_path} ...")            
+        model_path.mkdir(parents=True)
+        download_model(model_id, output_dir=model_path)
+        print(f"Model downloaded successfully.")
+    else:
+        print(f"Model already available on {model_path}.")
+
+    return str(model_path)
+
+
+async def handle_audio_chunk(
+    transcriber,
+    chunk: bytes,
+    audio_segment,
+    silence_thresh=SILENCE_THRESHOLD,
+    min_silence_len=MIN_SILENCE_LEN,
+):
+    import pydub
+
+    new_audio_segment = pydub.AudioSegment(
+        data=chunk,
+        channels=1,
+        sample_width=2,
+        frame_rate=TARGET_SAMPLE_RATE,
+    )
+
+    audio_segment += new_audio_segment
+
+    silent_windows = pydub.silence.detect_silence(
+        audio_segment,
+        min_silence_len=min_silence_len,
+        silence_thresh=silence_thresh,
+    )
+
+    if len(silent_windows) == 0:
+        return audio_segment, None
+
+    last_window = silent_windows[-1]
+
+    if last_window[0] == 0 and last_window[1] == len(audio_segment):
+        audio_segment = pydub.AudioSegment.empty()
+        return audio_segment, None
+
+    segment_to_transcribe = audio_segment[: last_window[1]]
+
+    audio_segment = audio_segment[last_window[1] :]
+    try:
+        text = transcriber.transcribe(segment_to_transcribe.raw_data)
+        return audio_segment, text
+    except Exception as e:
+        print("Transcription error:", e)
+        raise e
+
+
 @app.cls(
     image=image, 
     gpu=GPU, 
@@ -107,7 +182,7 @@ def maybe_download_model(model_storage_dir, model_name):
     enable_memory_snapshot=True,
     volumes={MODEL_MOUNT_DIR: volume})
 @modal.concurrent(max_inputs=14, target_inputs=10)
-class ASRModel:
+class Parakeet:
     @modal.enter()
     def load(self):
         import nemo.collections.asr as nemo_asr
@@ -117,7 +192,7 @@ class ASRModel:
         logging.getLogger("nemo_logger").setLevel(logging.CRITICAL)
 
         model_dir = MODEL_MOUNT_DIR / MODEL_DOWNLOAD_DIR
-        model_path = maybe_download_model(model_dir, "nvidia/parakeet-tdt-0.6b-v2")
+        model_path = maybe_download_nemo_model(model_dir, "nvidia/parakeet-tdt-0.6b-v2")
         
         # Check if we have a saved model, otherwise load from pretrained
         if os.path.exists(model_path):
@@ -169,8 +244,8 @@ class ASRModel:
             try:
                 while True:
                     chunk = await ws.receive_bytes()
-                    audio_segment, text = await self.handle_audio_chunk(
-                        chunk, audio_segment
+                    audio_segment, text = await handle_audio_chunk(
+                        self, chunk, audio_segment
                     )
                     if text:
                         await ws.send_text(text)
@@ -183,60 +258,92 @@ class ASRModel:
                     print(f"Error closing websocket: {type(e)}: {e}")
 
         return web_app
+
+
+@app.cls(
+    image=image, 
+    gpu=GPU, 
+    scaledown_window=SCALEDOWN, 
+    enable_memory_snapshot=True,
+    volumes={MODEL_MOUNT_DIR: volume})
+@modal.concurrent(max_inputs=14, target_inputs=10)
+class Whisper:
+    model_id = 'large-v3-turbo'
     
-    # Note for below: this is not necessarily the best way to handle streaming, take
-    # this more of a demonstration for how streaming via websockets could be done on Modal.
-    async def handle_audio_chunk(
-        self,
-        chunk: bytes,
-        audio_segment,
-        silence_thresh=SILENCE_THRESHOLD,
-        min_silence_len=MIN_SILENCE_LEN,
-    ):
-        import pydub
+    @modal.enter()
+    def load(self):
+        from faster_whisper import WhisperModel
+        
+        model_dir = MODEL_MOUNT_DIR / MODEL_DOWNLOAD_DIR
+        model_path = maybe_download_whisper_model(model_dir, self.model_id)
+        self.model = WhisperModel(model_path, device="cuda", compute_type="float16")
+        print(f"FasterWhisper model loaded from path: {model_path}")
 
-        new_audio_segment = pydub.AudioSegment(
-            data=chunk,
-            channels=1,
-            sample_width=2,
-            frame_rate=TARGET_SAMPLE_RATE,
-        )
+    def transcribe(self, audio_bytes: bytes) -> str:
+        import numpy as np
 
-        # append the new audio segment to the existing audio segment
-        audio_segment += new_audio_segment
+        # Convert raw bytes directly to numpy array (same as Parakeet approach)
+        audio_data = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
 
-        # detect windows of silence
-        silent_windows = pydub.silence.detect_silence(
-            audio_segment,
-            min_silence_len=min_silence_len,
-            silence_thresh=silence_thresh,
-        )
+        with NoStdStreams():
+            segments, _ = self.model.transcribe(
+                audio_data,
+                beam_size=5,
+                language=None,  # auto-detect
+                task='transcribe',
+                condition_on_previous_text=False,
+                vad_filter=True,
+            )
+            
+            transcription = ""
+            for segment in segments:
+                transcription += segment.text + " "
+        
+        return transcription.strip()
 
-        # if there are no silent windows, continue
-        if len(silent_windows) == 0:
-            return audio_segment, None
+    @modal.asgi_app()
+    def web(self):
+        from fastapi import FastAPI, Response, WebSocket
+        from fastapi.responses import HTMLResponse
+        from fastapi.staticfiles import StaticFiles
 
-        # get the last silent window because
-        # we want to transcribe until the final pause
-        last_window = silent_windows[-1]
+        web_app = FastAPI()
+        web_app.mount("/static", StaticFiles(directory="/frontend"))
 
-        # if the entire audio segment is silent, reset the audio segment
-        if last_window[0] == 0 and last_window[1] == len(audio_segment):
+        @web_app.get("/status")
+        async def status():
+            return Response(status_code=200)
+
+        @web_app.get("/")
+        async def index():
+            return HTMLResponse(content=open("/frontend/index.html").read())
+
+        @web_app.websocket("/ws")
+        async def run_with_websocket(ws: WebSocket):
+            from fastapi import WebSocketDisconnect
+            import pydub
+
+            await ws.accept()
+
             audio_segment = pydub.AudioSegment.empty()
-            return audio_segment, None
 
-        # get the segment to transcribe: beginning until last pause
-        segment_to_transcribe = audio_segment[: last_window[1]]
+            try:
+                while True:
+                    chunk = await ws.receive_bytes()
+                    audio_segment, text = await handle_audio_chunk(
+                        self, chunk, audio_segment
+                    )
+                    if text:
+                        await ws.send_text(text)
+            except Exception as e:
+                if not isinstance(e, WebSocketDisconnect):
+                    print(f"Error handling websocket: {type(e)}: {e}")
+                try:
+                    await ws.close(code=1011, reason="Internal server error")
+                except Exception as e:
+                    print(f"Error closing websocket: {type(e)}: {e}")
 
-        # remove the segment to transcribe from the audio segment
-        audio_segment = audio_segment[last_window[1] :]
-        try:
-            text = self.transcribe(segment_to_transcribe.raw_data)
-            return audio_segment, text
-        except Exception as e:
-            print("Transcription error:", e)
-            raise e
-
+        return web_app
 
 
 class NoStdStreams(object):

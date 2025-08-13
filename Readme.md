@@ -15,3 +15,22 @@
     * for this to work, you need to add a respective "secret" to your Modal workspace.
     * the secret needs to be called "huggingface-secret" and contain your huggingface API key
     * please follow [this documentation](https://modal.com/docs/guide/secrets) to add it
+
+
+
+
+## Test curl commands
+### English
+      *curl -X POST  "https://xxxxxx--whisper-asr-whispertranscriber-transcribe.modal.run"\
+      *     -F  "wav=@/path/to/example.wav"\  
+      *     -F "language=en"
+
+### Kiswahili         
+      *curl -X POST  "https://xxxxxx--whisper-asr-whispertranscriber-transcribe.modal.run"\
+            -F  "wav=@/path/to/example.wav"\  
+            -F "language=sw"
+
+
+
+
+ 

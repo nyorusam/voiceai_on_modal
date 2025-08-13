@@ -25,6 +25,7 @@ TMP_DOWNLOAD_DIR = Path("/tmp")
 GPU = 'L4'
 SCALEDOWN = 60 * 2 # seconds
 
+
 def maybe_download_model(model_storage_dir, model_id):
     """Download fasterwhisper model if not available locally.
     (We want to avoid downloading the same model every time we start the endpoint).
@@ -143,7 +144,11 @@ with cuda_image.imports():
     import os
     from faster_whisper import WhisperModel
 
+@app.function(secrets=[modal.Secret.from_name("huggingface-secret")])
+def some_function():
+    os.getenv("HUGGINGFACE_TOKEN")
 
+    
 @app.cls(
     image=cuda_image, 
     secrets=[modal.Secret.from_name("huggingface-secret")],
@@ -158,7 +163,7 @@ class WhisperTranscriber:
     model_id = 'large-v3-turbo'
 
     @modal.enter()
-    def enter(self):
+    def enter(self):       
         model_dir = MODEL_MOUNT_DIR / MODEL_DOWNLOAD_DIR
         model_path = maybe_download_model(model_dir, self.model_id)
         self.whisper_model = WhisperModel(model_path, device="cuda", compute_type="float16")
